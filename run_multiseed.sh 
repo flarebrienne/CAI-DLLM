@@ -1,0 +1,126 @@
+#!/bin/bash
+# =============================================================================
+# run_multiseed.sh — Multi-seed evaluation for CAI-dLLM
+# Runs 3 seeds for custom eval scripts (commonsense, mathqa)
+# lm-eval tasks already report stderr — no need to re-run
+#
+# Usage:
+#   bash run_multiseed.sh 0 llada piqa
+#   bash run_multiseed.sh 0 dream winogrande
+#   bash run_multiseed.sh 0 both mathqa
+#   bash run_multiseed.sh 0 both piqa
+# =============================================================================
+
+GPU=${1:-0}
+FILTER=${2:-"both"}
+TASK=${3:-"piqa"}
+SEEDS=(42 123 456)
+LOG_DIR="log_results/multiseed"
+mkdir -p $LOG_DIR
+DATE=$(date +%s)
+
+run_seed() {
+    local MODEL=$1
+    local MODEL_FLAG=$2
+    local SEED=$3
+    local N_SAMPLES=$4
+    local TASK_FLAG=$5
+
+    echo "  [Seed $SEED] Running ${MODEL} ${TASK_FLAG}..."
+
+    CUDA_VISIBLE_DEVICES=$GPU python cai_dllm/eval_commonsense.py \
+        --model ${MODEL_FLAG} \
+        --methods nocache,dualcache,esdllm,caidllm \
+        --n_samples ${N_SAMPLES} \
+        --tasks ${TASK_FLAG} \
+        --seed ${SEED} \
+        --output_dir $LOG_DIR \
+        2>&1 | tee $LOG_DIR/${MODEL}_${TASK_FLAG}_seed${SEED}_${DATE}.log
+
+    echo "  [Seed $SEED] Done."
+}
+
+run_seed_mathqa() {
+    local MODEL=$1
+    local MODEL_FLAG=$2
+    local SEED=$3
+
+    echo "  [Seed $SEED] Running ${MODEL} mathqa..."
+
+    CUDA_VISIBLE_DEVICES=$GPU python cai_dllm/eval_math_code.py \
+        --model ${MODEL_FLAG} \
+        --methods nocache,dualcache,esdllm,caidllm \
+        --tasks mathqa \
+        --n_mathqa 500 \
+        --seed ${SEED} \
+        --output_dir $LOG_DIR \
+        2>&1 | tee $LOG_DIR/${MODEL}_mathqa_seed${SEED}_${DATE}.log
+
+    echo "  [Seed $SEED] Done."
+}
+
+run_model() {
+    local MODEL=$1
+    local MODEL_FLAG=$2
+
+    echo ""
+    echo "================================================"
+    echo " Multi-seed ${TASK} — ${MODEL}"
+    echo "================================================"
+
+    for SEED in "${SEEDS[@]}"; do
+        if [ "$TASK" == "mathqa" ]; then
+            run_seed_mathqa "$MODEL" "$MODEL_FLAG" "$SEED"
+        elif [ "$TASK" == "piqa" ]; then
+            run_seed "$MODEL" "$MODEL_FLAG" "$SEED" 1838 "piqa"
+        elif [ "$TASK" == "winogrande" ]; then
+            run_seed "$MODEL" "$MODEL_FLAG" "$SEED" 500 "winogrande"
+        fi
+    done
+
+    # Compute mean and std across seeds
+    echo ""
+    echo "=== ${MODEL} ${TASK} — Mean ± Std across 3 seeds ==="
+    python3 - << PYEOF
+import json, glob, numpy as np
+
+results_by_method = {}
+for seed in [42, 123, 456]:
+    pattern = "$LOG_DIR/${MODEL}_${TASK}_seed${seed}_*.json"
+    files = glob.glob(pattern)
+    if not files:
+        # Try reading from log
+        continue
+    with open(sorted(files)[-1]) as f:
+        data = json.load(f)
+    for method, r in data.get('results', {}).items():
+        if method not in results_by_method:
+            results_by_method[method] = []
+        task_key = list(r.keys())[0] if r else None
+        if task_key and task_key != 'avg_acc':
+            results_by_method[method].append(r[task_key]['acc'])
+
+if results_by_method:
+    print(f"  {'Method':<20} {'Mean Acc':>10} {'Std':>8} {'Min':>8} {'Max':>8}")
+    print(f"  {'─'*55}")
+    for method, accs in results_by_method.items():
+        if accs:
+            print(f"  {method:<20} {np.mean(accs):>9.2f}% "
+                  f"{np.std(accs):>7.2f}% "
+                  f"{min(accs):>7.2f}% "
+                  f"{max(accs):>7.2f}%")
+else:
+    print("  Run completed. Parse logs manually for results.")
+PYEOF
+}
+
+if [ "$FILTER" == "llada" ] || [ "$FILTER" == "both" ]; then
+    run_model "LLaDA" "LLaDA-Instruct"
+fi
+
+if [ "$FILTER" == "dream" ] || [ "$FILTER" == "both" ]; then
+    run_model "Dream" "Dream-Instruct"
+fi
+
+echo ""
+echo "Multi-seed evaluation complete. Results in $LOG_DIR"

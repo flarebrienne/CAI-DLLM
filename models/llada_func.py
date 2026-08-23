@@ -22,6 +22,8 @@ def RotaryEmbedding_forward(self, q: torch.Tensor, k: torch.Tensor, q_pos: torch
         pos_sin = pos_sin.type_as(q_)
         pos_cos = pos_cos.type_as(q_)
         if q_pos is not None:
+            q_pos = q_pos.long()
+            if k_pos is not None: k_pos = k_pos.long()
             q_ = self.apply_rotary_pos_emb(
                 pos_sin.take_along_dim(q_pos[:, None, :, None], 2),
                 pos_cos.take_along_dim(q_pos[:, None, :, None], 2),

@@ -341,7 +341,7 @@ def batch_generate(model, input_ids, mask, generation_kwargs: dict = {}):
     prompt_index = (x != mask_id)
     if mask is not None and torch.any(mask == 0.0):
         mask = F.pad(mask, (0, gen_length), value=1.0)  # Pad attention mask to match the length of x
-        real_position = torch.cumsum(mask, dim=-1).to(x.device) - 1  # Real position for rotary embeddings
+        real_position = torch.cumsum(mask, dim=-1).to(x.device).long() - 1  # Real position for rotary embeddings
         attention_mask = torch.logical_and(mask.unsqueeze(1).unsqueeze(-2), mask.unsqueeze(1).unsqueeze(-1)).to(model.device)   # (batch_size, 1, L + gen_length, L + gen_length)
     else:
         mask = torch.ones((batch_size, max_length), dtype=torch.bfloat16, device=x.device)
